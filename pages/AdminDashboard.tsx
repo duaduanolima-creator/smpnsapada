@@ -2,11 +2,12 @@
 import React, { useState, useEffect } from 'react';
 import Header from '../components/Header';
 import { User, DailyAttendance, TeachingActivity } from '../types';
-import { fetchDashboardData, fetchUsersFromSheet } from '../services/api';
+import { fetchDashboardData, fetchUsersFromSheet, fetchReportData } from '../services/api';
 import { 
   Users, BookOpen, Clock, CheckCircle, XCircle, Search, 
   IdCard, GraduationCap, ArrowRight, UserCheck, UserMinus, 
-  MapPin, X, Calendar, Phone, MessageSquare, AlertCircle, RefreshCw
+  MapPin, X, Calendar, Phone, MessageSquare, AlertCircle, RefreshCw,
+  Download, FileText
 } from 'lucide-react';
 
 interface AdminDashboardProps {
@@ -23,6 +24,12 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user }) => {
   const [isLoading, setIsLoading] = useState(true);
   const [lastUpdated, setLastUpdated] = useState<Date>(new Date());
   const [currentTime, setCurrentTime] = useState<Date>(new Date());
+
+  // State untuk Download Report
+  const [showDownloadModal, setShowDownloadModal] = useState(false);
+  const [downloadStartDate, setDownloadStartDate] = useState('');
+  const [downloadEndDate, setDownloadEndDate] = useState('');
+  const [isDownloading, setIsDownloading] = useState(false);
 
   const getInitials = (name: string) => {
     const n = name.replace(/[^a-zA-Z ]/g, "").trim();
@@ -117,6 +124,12 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user }) => {
     // Update jam lokal setiap 1 detik untuk realtime status check
     const timeInterval = setInterval(() => setCurrentTime(new Date()), 1000);
     
+    // Set default tanggal download (Awal bulan s/d Hari ini)
+    const now = new Date();
+    const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
+    setDownloadStartDate(firstDay.toISOString().split('T')[0]);
+    setDownloadEndDate(now.toISOString().split('T')[0]);
+    
     return () => {
       clearInterval(dataInterval);
       clearInterval(timeInterval);
@@ -202,6 +215,46 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user }) => {
     }
   };
 
+  const convertToCSV = (data: any[]) => {
+    if (data.length === 0) return '';
+    const headers = Object.keys(data[0]).join(',');
+    const rows = data.map(obj => Object.values(obj).map(val => `"${val}"`).join(','));
+    return [headers, ...rows].join('\n');
+  };
+
+  const handleDownloadReport = async () => {
+    setIsDownloading(true);
+    try {
+      // Fetch report data
+      const reportData = await fetchReportData(downloadStartDate, downloadEndDate);
+      
+      if (!reportData || reportData.length === 0) {
+        alert("Tidak ada data ditemukan pada rentang tanggal tersebut.");
+        setIsDownloading(false);
+        return;
+      }
+
+      // Convert to CSV
+      const csvString = convertToCSV(reportData);
+      
+      // Trigger download
+      const blob = new Blob([csvString], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', `Laporan_Absensi_SMPN1_${downloadStartDate}_sd_${downloadEndDate}.csv`);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      
+      setShowDownloadModal(false);
+    } catch (error) {
+      alert("Gagal mengunduh laporan.");
+    } finally {
+      setIsDownloading(false);
+    }
+  };
+
   const handleCloseModal = () => setSelectedTeacher(null);
 
   return (
@@ -250,13 +303,22 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user }) => {
            <span className="text-[10px] text-slate-500 font-mono">
               Last update: {lastUpdated.toLocaleTimeString('id-ID')}
            </span>
-           <button 
-             onClick={loadData} 
-             disabled={isLoading}
-             className="p-2 bg-slate-800 rounded-full text-indigo-400 hover:text-white transition-colors"
-           >
-             <RefreshCw size={14} className={isLoading ? "animate-spin" : ""} />
-           </button>
+           <div className="flex gap-2">
+             <button 
+               onClick={() => setShowDownloadModal(true)} 
+               className="flex items-center gap-2 px-3 py-1.5 bg-indigo-600/20 border border-indigo-500/30 rounded-full text-indigo-400 hover:bg-indigo-600 hover:text-white transition-all text-[10px] font-bold uppercase tracking-wider"
+             >
+               <Download size={14} />
+               Laporan
+             </button>
+             <button 
+               onClick={loadData} 
+               disabled={isLoading}
+               className="p-2 bg-slate-800 rounded-full text-indigo-400 hover:text-white transition-colors"
+             >
+               <RefreshCw size={14} className={isLoading ? "animate-spin" : ""} />
+             </button>
+           </div>
         </div>
         
         <div className="relative group">
@@ -512,6 +574,67 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user }) => {
                   </div>
                </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Download Modal */}
+      {showDownloadModal && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center px-6">
+          <div 
+            className="fixed inset-0 bg-slate-950/90 backdrop-blur-sm animate-in fade-in duration-300" 
+            onClick={() => setShowDownloadModal(false)}
+          />
+          <div className="relative w-full max-w-sm bg-slate-900 rounded-[2.5rem] border border-white/10 p-8 shadow-2xl animate-in zoom-in slide-in-from-bottom-4 duration-300">
+             <div className="flex justify-between items-center mb-6">
+                <h3 className="text-xl font-bold text-white flex items-center gap-2">
+                  <FileText className="text-indigo-500" /> Laporan Presensi
+                </h3>
+                <button onClick={() => setShowDownloadModal(false)} className="text-slate-500 hover:text-white">
+                  <X size={20} />
+                </button>
+             </div>
+
+             <div className="space-y-4">
+                <div className="space-y-2">
+                   <label className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">Tanggal Mulai</label>
+                   <input 
+                      type="date" 
+                      value={downloadStartDate}
+                      onChange={(e) => setDownloadStartDate(e.target.value)}
+                      className="w-full p-4 bg-slate-800 border border-slate-700 rounded-xl text-white outline-none focus:ring-2 focus:ring-indigo-500/50"
+                   />
+                </div>
+                <div className="space-y-2">
+                   <label className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">Tanggal Selesai</label>
+                   <input 
+                      type="date" 
+                      value={downloadEndDate}
+                      onChange={(e) => setDownloadEndDate(e.target.value)}
+                      className="w-full p-4 bg-slate-800 border border-slate-700 rounded-xl text-white outline-none focus:ring-2 focus:ring-indigo-500/50"
+                   />
+                </div>
+
+                <div className="pt-4">
+                  <button 
+                    onClick={handleDownloadReport}
+                    disabled={isDownloading}
+                    className="w-full py-4 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-2xl shadow-lg shadow-indigo-600/20 active:scale-[0.98] transition-all flex items-center justify-center gap-2"
+                  >
+                    {isDownloading ? (
+                      <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                    ) : (
+                      <>
+                        <Download size={20} />
+                        Unduh File CSV
+                      </>
+                    )}
+                  </button>
+                  <p className="text-[10px] text-center text-slate-600 mt-3 font-medium">
+                    File CSV dapat dibuka di Microsoft Excel atau Google Sheets.
+                  </p>
+                </div>
+             </div>
           </div>
         </div>
       )}

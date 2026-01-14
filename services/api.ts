@@ -78,6 +78,21 @@ export const fetchDashboardData = async () => {
   }
 };
 
+// --- FUNGSI BARU: FETCH REPORT DATA ---
+export const fetchReportData = async (startDate: string, endDate: string) => {
+  try {
+    // Meminta data laporan berdasarkan rentang tanggal
+    const url = `${GAS_WEBAPP_URL}?action=GET_REPORT&start=${startDate}&end=${endDate}&t=${new Date().getTime()}`;
+    const response = await fetch(url, { method: 'GET', redirect: "follow" });
+    if (!response.ok) throw new Error("Network response was not ok");
+    const data = await response.json();
+    return data; // Harapannya data berupa array object
+  } catch (error) {
+    console.error("Gagal download laporan:", error);
+    return [];
+  }
+};
+
 // --- FUNGSI PENGIRIMAN DATA KE GOOGLE APPS SCRIPT ---
 
 export interface SubmissionPayload {

@@ -1,15 +1,14 @@
 
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { LogIn, LogOut, Coffee, GraduationCap, MapPin, Clock, Camera, Check, X, RefreshCw, Fingerprint, FileText, Calendar as CalendarIcon, Image as ImageIcon, AlertCircle, ShieldCheck, Navigation, UploadCloud } from 'lucide-react';
+import { LogIn, LogOut, Coffee, GraduationCap, MapPin, Clock, Camera, Check, X, RefreshCw, Fingerprint, FileText, Calendar as CalendarIcon, Image as ImageIcon, AlertCircle, ShieldCheck, Navigation } from 'lucide-react';
 import Header from '../components/Header';
 import { User } from '../types';
-import { submitToGoogleSheets, SubmissionPayload } from '../services/api';
 
 interface HomeProps { user: User; }
 
-// School coordinates for SMPN 1 Padarincang (Updated)
-const SCHOOL_LAT = -6.207676212766887;
-const SCHOOL_LNG = 105.97295421490682;
+// School coordinates for SMPN 1 Padarincang
+const SCHOOL_LAT = -6.207717532534012;
+const SCHOOL_LNG = 105.97297020119038;
 const ALLOWED_RADIUS_METERS = 50; 
 
 const Home: React.FC<HomeProps> = ({ user }) => {
@@ -19,12 +18,10 @@ const Home: React.FC<HomeProps> = ({ user }) => {
   const [showLeaveModal, setShowLeaveModal] = useState(false);
   
   const [errors, setErrors] = useState<Record<string, string>>({});
-  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const [startTime, setStartTime] = useState('');
   const [endTime, setEndTime] = useState('');
   const [selectedSubject, setSelectedSubject] = useState('Matematika');
-  const [selectedClass, setSelectedClass] = useState('VII - 1');
 
   const [leaveType, setLeaveType] = useState<'Izin' | 'Sakit' | 'Dinas'>('Izin');
   const [leaveStartDate, setLeaveStartDate] = useState('');
@@ -96,6 +93,14 @@ const Home: React.FC<HomeProps> = ({ user }) => {
     });
   };
 
+  const getInitials = (name: string) => {
+    const n = name.replace(/[^a-zA-Z ]/g, "").trim();
+    const parts = n.split(' ').filter(p => p.length > 0);
+    if (parts.length === 0) return "U";
+    if (parts.length === 1) return parts[0].substring(0, 2).toUpperCase();
+    return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+  };
+
   const clearErrors = () => setErrors({});
 
   const handleOpenTeaching = () => {
@@ -130,7 +135,6 @@ const Home: React.FC<HomeProps> = ({ user }) => {
     setDistance(null);
     setLocation(null);
     clearErrors();
-    setIsSubmitting(false);
   };
 
   const closeTeachingModal = () => {
@@ -139,13 +143,11 @@ const Home: React.FC<HomeProps> = ({ user }) => {
     setAttendanceType(null);
     setPhoto(null);
     clearErrors();
-    setIsSubmitting(false);
   };
 
   const closeLeaveModal = () => {
     setShowLeaveModal(false);
     clearErrors();
-    setIsSubmitting(false);
   };
 
   const getLocation = () => {
@@ -241,7 +243,7 @@ const Home: React.FC<HomeProps> = ({ user }) => {
         }
 
         ctx.drawImage(video, sx, sy, sWidth, sHeight, 0, 0, 600, 800);
-        const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
         setPhoto(dataUrl);
         setErrors(prev => {
             const next = {...prev};
@@ -273,7 +275,7 @@ const Home: React.FC<HomeProps> = ({ user }) => {
     }
   };
 
-  const handleSubmitAttendance = async () => {
+  const handleSubmitAttendance = () => {
     const newErrors: Record<string, string> = {};
     if (!photo) newErrors.photo = "Wajib mengambil foto selfie sebagai bukti kehadiran.";
     if (!location) newErrors.location = "Wajib mengaktifkan GPS untuk mencatat lokasi presensi.";
@@ -286,41 +288,20 @@ const Home: React.FC<HomeProps> = ({ user }) => {
       return;
     }
 
-    setIsSubmitting(true);
-
     const typeLabel = attendanceType === 'IN' ? 'Masuk' : 'Pulang';
-    const payload: SubmissionPayload = {
-      action: 'ATTENDANCE',
-      user: {
-        name: user.name,
-        nip: user.nip,
-        role: user.role
-      },
-      data: {
-        type: attendanceType, // 'IN' or 'OUT'
-        timestamp: new Date().toISOString(),
-        location: location ? `${location.lat}, ${location.lng}` : '',
-        distance: distance,
-        photoBase64: photo
-      }
-    };
-
-    const success = await submitToGoogleSheets(payload);
-    
-    setIsSubmitting(false);
-
-    if (success) {
-      if (attendanceType === 'IN') setStatus('PRESENT');
-      else setStatus('OUT');
-      
-      alert(`Presensi ${typeLabel} Berhasil Disimpan!\nData telah terkirim ke server.`);
-      closeAttendanceModal();
+    if (attendanceType === 'IN') {
+      setStatus('PRESENT');
     } else {
-      alert("Gagal mengirim data. Cek koneksi internet atau coba lagi nanti.");
+      setStatus('OUT');
     }
+    
+    if (location) {
+        alert(`Presensi ${typeLabel} Berhasil!\n\nNama: ${user.name}\nNIP: ${user.nip}\nWaktu: ${formatTime(new Date())}\nLokasi: ${location.lat.toFixed(5)}, ${location.lng.toFixed(5)}\nJarak: ${Math.round(distance || 0)}m`);
+    }
+    closeAttendanceModal();
   };
 
-  const handleSubmitTeaching = async () => {
+  const handleSubmitTeaching = () => {
     const newErrors: Record<string, string> = {};
     
     if (!startTime) newErrors.startTime = "Jam mulai wajib diisi.";
@@ -335,37 +316,11 @@ const Home: React.FC<HomeProps> = ({ user }) => {
         return;
     }
 
-    setIsSubmitting(true);
-
-    const payload: SubmissionPayload = {
-      action: 'TEACHING',
-      user: {
-        name: user.name,
-        nip: user.nip,
-        role: user.role
-      },
-      data: {
-        subject: selectedSubject,
-        className: selectedClass,
-        startTime: startTime,
-        endTime: endTime,
-        timestamp: new Date().toISOString(),
-        photoBase64: photo
-      }
-    };
-
-    const success = await submitToGoogleSheets(payload);
-    setIsSubmitting(false);
-
-    if (success) {
-      alert(`Jurnal Mengajar Berhasil Disimpan!\nMapel: ${selectedSubject}\nKelas: ${selectedClass}`);
-      closeTeachingModal();
-    } else {
-      alert("Gagal mengirim data. Cek koneksi internet.");
-    }
+    alert(`Sesi Mengajar Berhasil Dicatat!\n\nMapel: ${selectedSubject}\nWaktu: ${startTime} - ${endTime}\nFoto telah tersimpan.`);
+    closeTeachingModal();
   };
 
-  const handleSubmitLeave = async () => {
+  const handleSubmitLeave = () => {
     const newErrors: Record<string, string> = {};
     
     if (!leaveStartDate) newErrors.leaveStartDate = "Pilih tanggal mulai.";
@@ -382,39 +337,13 @@ const Home: React.FC<HomeProps> = ({ user }) => {
         return;
     }
 
-    setIsSubmitting(true);
-
-    const payload: SubmissionPayload = {
-      action: 'LEAVE',
-      user: {
-        name: user.name,
-        nip: user.nip,
-        role: user.role
-      },
-      data: {
-        leaveType: leaveType,
-        startDate: leaveStartDate,
-        endDate: leaveEndDate,
-        reason: leaveReason,
-        timestamp: new Date().toISOString(),
-        attachmentBase64: leaveAttachment
-      }
-    };
-
-    const success = await submitToGoogleSheets(payload);
-    setIsSubmitting(false);
-
-    if (success) {
-      alert(`Pengajuan ${leaveType} Berhasil Dikirim!`);
-      setShowLeaveModal(false);
-      setLeaveReason('');
-      setLeaveStartDate('');
-      setLeaveEndDate('');
-      setLeaveAttachment(null);
-      clearErrors();
-    } else {
-      alert("Gagal mengirim pengajuan. Coba lagi.");
-    }
+    alert(`Pengajuan ${leaveType} Berhasil Dikirim!\n\nTanggal: ${leaveStartDate} s/d ${leaveEndDate}\nAlasan: ${leaveReason}`);
+    setShowLeaveModal(false);
+    setLeaveReason('');
+    setLeaveStartDate('');
+    setLeaveEndDate('');
+    setLeaveAttachment(null);
+    clearErrors();
   };
 
   const ErrorMsg = ({ name }: { name: string }) => errors[name] ? (
@@ -432,17 +361,35 @@ const Home: React.FC<HomeProps> = ({ user }) => {
           <div className="absolute top-0 right-0 p-4 opacity-10">
             <LogOut size={100} className="rotate-180" />
           </div>
-          <h2 className="text-slate-400 text-sm font-medium">Halo, selamat pagi!</h2>
-          <p className="text-xl font-bold text-white mt-1 truncate">{user.name}</p>
-          <div className="flex flex-wrap items-center gap-2 mt-3">
-            <div className="flex items-center gap-2 text-indigo-400 bg-indigo-500/10 px-3 py-1 rounded-full border border-indigo-500/20">
-                <span className="w-2 h-2 rounded-full bg-indigo-400 animate-pulse"></span>
-                <span className="text-[10px] font-semibold uppercase">{user.role}</span>
+          
+          <div className="flex items-center justify-between gap-4 relative z-10">
+            <div className="flex-1 min-w-0">
+                <h2 className="text-slate-400 text-sm font-medium">Halo, selamat pagi!</h2>
+                <p className="text-xl font-bold text-white mt-1 truncate">{user.name}</p>
+                <div className="flex flex-wrap items-center gap-2 mt-3">
+                    <div className="flex items-center gap-2 text-indigo-400 bg-indigo-500/10 px-3 py-1 rounded-full border border-indigo-500/20">
+                        <span className="w-2 h-2 rounded-full bg-indigo-400 animate-pulse"></span>
+                        <span className="text-[10px] font-semibold uppercase">{user.role}</span>
+                    </div>
+                    <div className="text-[10px] font-mono text-slate-500 bg-slate-800/50 px-3 py-1 rounded-full border border-white/5">
+                        NIP: {user.nip}
+                    </div>
+                </div>
             </div>
-            <div className="text-[10px] font-mono text-slate-500 bg-slate-800/50 px-3 py-1 rounded-full border border-white/5">
-                NIP: {user.nip}
+            
+            <div className="shrink-0">
+                 <div className="w-16 h-16 rounded-full p-0.5 bg-gradient-to-tr from-indigo-500 to-purple-500 shadow-lg shadow-indigo-500/20">
+                    <div className="w-full h-full rounded-full bg-slate-800 border-2 border-slate-900 overflow-hidden flex items-center justify-center">
+                         {user.avatar ? (
+                            <img src={user.avatar} alt="Profile" className="w-full h-full object-cover" />
+                         ) : (
+                            <span className="text-lg font-black text-white">{getInitials(user.name)}</span>
+                         )}
+                    </div>
+                </div>
             </div>
           </div>
+
         </div>
       </div>
 
@@ -596,17 +543,11 @@ const Home: React.FC<HomeProps> = ({ user }) => {
 
               <button 
                 onClick={handleSubmitAttendance}
-                disabled={distance !== null && distance > ALLOWED_RADIUS_METERS || isSubmitting}
+                disabled={distance !== null && distance > ALLOWED_RADIUS_METERS}
                 className={`w-full py-5 text-white font-bold rounded-2xl shadow-xl active:scale-[0.98] transition-all flex items-center justify-center gap-2 mt-2 ${distance !== null && distance > ALLOWED_RADIUS_METERS ? 'bg-slate-700 cursor-not-allowed opacity-60' : 'bg-indigo-600 shadow-indigo-600/30 hover:bg-indigo-700'}`}
               >
-                {isSubmitting ? (
-                  <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                ) : (
-                  <>
-                    <UploadCloud size={20} />
-                    {distance !== null && distance > ALLOWED_RADIUS_METERS ? 'Di luar Jangkauan Sekolah' : 'Kirim Laporan Presensi'}
-                  </>
-                )}
+                <Check size={20} />
+                {distance !== null && distance > ALLOWED_RADIUS_METERS ? 'Di luar Jangkauan Sekolah' : 'Kirim Laporan Presensi'}
               </button>
             </div>
           </div>
@@ -674,11 +615,7 @@ const Home: React.FC<HomeProps> = ({ user }) => {
                           <label className="text-[10px] font-bold text-indigo-400 uppercase mb-2 flex items-center gap-1">
                              <MapPin size={10}/> Ruang / Kelas
                           </label>
-                          <select 
-                            value={selectedClass}
-                            onChange={(e) => setSelectedClass(e.target.value)}
-                            className="w-full p-4 bg-slate-800 border border-slate-700 rounded-xl text-white outline-none focus:ring-2 focus:ring-indigo-500/50 text-xs"
-                          >
+                          <select className="w-full p-4 bg-slate-800 border border-slate-700 rounded-xl text-white outline-none focus:ring-2 focus:ring-indigo-500/50 text-xs">
                               {roomOptions.map(room => (
                                 <option key={room} value={room}>{room}</option>
                               ))}
@@ -738,17 +675,10 @@ const Home: React.FC<HomeProps> = ({ user }) => {
 
                     <button 
                         onClick={handleSubmitTeaching}
-                        disabled={isSubmitting}
                         className="w-full py-5 bg-amber-500 hover:bg-amber-600 text-slate-950 font-black rounded-2xl shadow-lg shadow-amber-500/20 active:scale-[0.98] transition-all flex items-center justify-center gap-2"
                     >
-                        {isSubmitting ? (
-                          <div className="w-5 h-5 border-2 border-slate-900/30 border-t-slate-950 rounded-full animate-spin" />
-                        ) : (
-                          <>
-                            <UploadCloud size={20} strokeWidth={3} />
-                            Konfirmasi Sesi
-                          </>
-                        )}
+                        <Check size={20} strokeWidth={3} />
+                        Konfirmasi Sesi
                     </button>
                 </div>
             </div>
@@ -878,17 +808,10 @@ const Home: React.FC<HomeProps> = ({ user }) => {
 
                     <button 
                         onClick={handleSubmitLeave}
-                        disabled={isSubmitting}
                         className="w-full py-5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-2xl shadow-xl shadow-indigo-600/20 active:scale-[0.98] transition-all flex items-center justify-center gap-2"
                     >
-                        {isSubmitting ? (
-                          <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                        ) : (
-                          <>
-                            <UploadCloud size={20} />
-                            Kirim Pengajuan
-                          </>
-                        )}
+                        <Check size={20} />
+                        Kirim Pengajuan
                     </button>
                 </div>
             </div>

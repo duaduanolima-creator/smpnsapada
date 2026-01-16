@@ -12,6 +12,7 @@ interface ProfileProps {
 const Profile: React.FC<ProfileProps> = ({ user, onLogout }) => {
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
 
+  // Fallback function jika avatar kosong (meskipun login system sudah handle, ini buat jaga-jaga)
   const getInitials = (name: string) => {
     const n = name.replace(/[^a-zA-Z ]/g, "").trim();
     const parts = n.split(' ').filter(p => p.length > 0);
@@ -50,11 +51,24 @@ const Profile: React.FC<ProfileProps> = ({ user, onLogout }) => {
       <div className="flex flex-col items-center pt-8 pb-6 px-6">
         <div className="relative">
           <div className="w-28 h-28 rounded-full p-1 bg-gradient-to-tr from-indigo-500 to-purple-500 shadow-xl shadow-indigo-500/20">
-            <div className="w-full h-full rounded-full bg-slate-800 border-4 border-slate-950 flex items-center justify-center overflow-hidden">
-                <span className="text-3xl font-black text-white tracking-widest">{getInitials(user.name)}</span>
+            <div className="w-full h-full rounded-full bg-slate-800 border-4 border-slate-950 flex items-center justify-center overflow-hidden relative">
+                {user.avatar ? (
+                  <img 
+                    src={user.avatar} 
+                    alt={user.name} 
+                    className="w-full h-full object-cover"
+                    onError={(e) => {
+                      // Fallback visual jika link gambar rusak
+                      e.currentTarget.style.display = 'none';
+                      // Sibling span (initials) would need to be rendered conditionally or we accept blank/bg color
+                    }}
+                  />
+                ) : (
+                  <span className="text-3xl font-black text-white tracking-widest">{getInitials(user.name)}</span>
+                )}
             </div>
           </div>
-          <div className="absolute bottom-1 right-1 w-7 h-7 bg-indigo-600 rounded-full border-2 border-slate-950 flex items-center justify-center text-white shadow-lg">
+          <div className="absolute bottom-1 right-1 w-7 h-7 bg-indigo-600 rounded-full border-2 border-slate-950 flex items-center justify-center text-white shadow-lg z-10">
             <UserIcon size={14} />
           </div>
         </div>

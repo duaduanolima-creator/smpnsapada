@@ -7,25 +7,34 @@ import {
   Users, BookOpen, Clock, CheckCircle, XCircle, Search, 
   IdCard, GraduationCap, ArrowRight, UserCheck, UserMinus, 
   MapPin, X, Calendar, Phone, MessageSquare, AlertCircle, RefreshCw,
-  Download, FileText
+  Download, FileText, PieChart, TrendingUp
 } from 'lucide-react';
 
 interface AdminDashboardProps {
   user: User;
 }
 
+interface MonthlyRecap {
+  nip: string;
+  name: string;
+  presentCount: number;
+  percentage: number;
+}
+
 const AdminDashboard: React.FC<AdminDashboardProps> = ({ user }) => {
-  const [activeTab, setActiveTab] = useState<'attendance' | 'teaching'>('attendance');
+  const [activeTab, setActiveTab] = useState<'attendance' | 'teaching' | 'recap'>('attendance');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedTeacher, setSelectedTeacher] = useState<DailyAttendance | null>(null);
   
   const [attendanceData, setAttendanceData] = useState<DailyAttendance[]>([]);
   const [teachingData, setTeachingData] = useState<TeachingActivity[]>([]);
+  const [monthlyRecaps, setMonthlyRecaps] = useState<MonthlyRecap[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [lastUpdated, setLastUpdated] = useState<Date>(new Date());
   const [currentTime, setCurrentTime] = useState<Date>(new Date());
 
-  // State untuk Download Report
+  const WORKING_DAYS_STANDAR = 20;
+
   const [showDownloadModal, setShowDownloadModal] = useState(false);
   const [downloadStartDate, setDownloadStartDate] = useState('');
   const [downloadEndDate, setDownloadEndDate] = useState('');
@@ -42,56 +51,40 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user }) => {
   const loadData = async () => {
     setIsLoading(true);
     try {
-      // 1. Ambil semua user (Guru)
       const allUsers = await fetchUsersFromSheet();
       const teachers = allUsers.filter(u => u.Role !== 'Admin' && u.Role !== 'Superadmin');
-      
-      // 2. Ambil log hari ini dari GAS
       const dashboardData = await fetchDashboardData();
       
       if (dashboardData) {
         const { attendance, teaching, leaves } = dashboardData;
-
-        // Helper: Format Time ISO String to HH:mm
         const formatTime = (isoString: string) => {
            if (!isoString) return '--:--';
-           // Cek apakah formatnya ISO Date (mengandung T atau -)
            if (isoString.includes('T') || isoString.includes('-')) {
              try {
                 const d = new Date(isoString);
                 if (isNaN(d.getTime())) return isoString;
-                // Format ke HH:mm (id-ID biasanya pakai titik, kita ganti titik jadi titik dua biar umum)
                 return d.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', hour12: false }).replace('.', ':');
-             } catch {
-                return isoString;
-             }
+             } catch { return isoString; }
            }
-           // Jika sudah format jam biasa, kembalikan saja (misal 07:00)
            return isoString;
         };
 
-        // 3. Proses Log Mengajar
-        const teachingFormatted: TeachingActivity[] = teaching.map((t: any) => ({
+        const teachingFormatted: TeachingActivity[] = (teaching || []).map((t: any) => ({
           id: `teach-${t.id}`,
           name: t.name,
           subject: t.subject,
           className: t.className,
           timeRange: `${formatTime(t.startTime)} - ${formatTime(t.endTime)}`,
-          endTime: t.endTime // Simpan raw endTime untuk validasi status
+          endTime: t.endTime
         }));
         setTeachingData(teachingFormatted);
 
-        // 4. Proses Log Absensi (Gabungkan User + Log Masuk + Log Izin)
         const dailyAttendance: DailyAttendance[] = teachers.map((teacher) => {
-          // Cari log absen (bisa ada 2 log: IN dan OUT)
-          const teacherLogs = attendance.filter((log: any) => log.nip === teacher.NIP);
+          const teacherLogs = (attendance || []).filter((log: any) => log.nip === teacher.NIP);
           const logIn = teacherLogs.find((log: any) => log.type === 'IN');
           const logOut = teacherLogs.find((log: any) => log.type === 'OUT');
-          
-          // Cari log izin
-          const leaveLog = leaves.find((l: any) => l.nip === teacher.NIP);
+          const leaveLog = (leaves || []).find((l: any) => l.nip === teacher.NIP);
 
-          // Tentukan Status
           let status: 'HADIR' | 'IZIN' | 'SAKIT' | 'BELUM HADIR' = 'BELUM HADIR';
           if (logIn) status = 'HADIR';
           else if (leaveLog) status = leaveLog.status === 'Sakit' ? 'SAKIT' : 'IZIN';
@@ -106,8 +99,27 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user }) => {
             photoUrl: logIn ? logIn.photo : null
           };
         });
-
         setAttendanceData(dailyAttendance);
+
+        // REAL CALCULATION: Menghitung persentase dari data asli
+        const recaps: MonthlyRecap[] = teachers.map(t => {
+            // Filter log absensi Masuk (IN) milik guru ini
+            const teacherInLogs = (attendance || []).filter((log: any) => log.nip === t.NIP && log.type === 'IN');
+            
+            // Hitung jumlah hari unik (agar absensi ganda di hari yang sama tidak terhitung dua kali)
+            const uniqueAttendanceDays = new Set(teacherInLogs.map((log: any) => {
+                const date = new Date(log.timestamp);
+                return isNaN(date.getTime()) ? null : date.toDateString();
+            })).size;
+            
+            return {
+                nip: t.NIP,
+                name: t.Nama || t.Username,
+                presentCount: uniqueAttendanceDays,
+                percentage: (uniqueAttendanceDays / WORKING_DAYS_STANDAR) * 100
+            };
+        });
+        setMonthlyRecaps(recaps);
       }
       setLastUpdated(new Date());
     } catch (error) {
@@ -119,66 +131,30 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user }) => {
 
   useEffect(() => {
     loadData();
-    // Auto refresh data setiap 60 detik
     const dataInterval = setInterval(loadData, 60000);
-    // Update jam lokal setiap 1 detik untuk realtime status check
     const timeInterval = setInterval(() => setCurrentTime(new Date()), 1000);
-    
-    // Set default tanggal download (Awal bulan s/d Hari ini)
     const now = new Date();
-    const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
-    setDownloadStartDate(firstDay.toISOString().split('T')[0]);
+    setDownloadStartDate(new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0]);
     setDownloadEndDate(now.toISOString().split('T')[0]);
-    
-    return () => {
-      clearInterval(dataInterval);
-      clearInterval(timeInterval);
-    };
+    return () => { clearInterval(dataInterval); clearInterval(timeInterval); };
   }, []);
 
-  // Logic Sorting: Hadir (Jam Awal) -> Izin/Sakit -> Belum Hadir -> Nama Abjad
   const filteredAttendance = attendanceData
-    .filter(item => 
-      item.name.toLowerCase().includes(searchQuery.toLowerCase()) || 
-      item.nip.includes(searchQuery)
-    )
+    .filter(item => item.name.toLowerCase().includes(searchQuery.toLowerCase()) || item.nip.includes(searchQuery))
     .sort((a, b) => {
-      // Helper untuk bobot status
-      const getStatusPriority = (status: string) => {
-        if (status === 'HADIR') return 0;
-        if (status === 'IZIN' || status === 'SAKIT') return 1;
-        return 2; // BELUM HADIR
-      };
-
-      const priorityA = getStatusPriority(a.status);
-      const priorityB = getStatusPriority(b.status);
-
-      // 1. Sort berdasarkan Status (Hadir paling atas)
-      if (priorityA !== priorityB) {
-        return priorityA - priorityB;
-      }
-
-      // 2. Jika sama-sama HADIR, sort berdasarkan Jam Masuk (Ascending/Paling Pagi)
-      if (a.status === 'HADIR' && b.status === 'HADIR') {
-        if (a.timeIn && b.timeIn) {
-          return a.timeIn.localeCompare(b.timeIn);
-        }
-      }
-
-      // 3. Fallback: Sort Abjad Nama
+      const getStatusPriority = (s: string) => s === 'HADIR' ? 0 : (s === 'IZIN' || s === 'SAKIT' ? 1 : 2);
+      const pA = getStatusPriority(a.status);
+      const pB = getStatusPriority(b.status);
+      if (pA !== pB) return pA - pB;
+      if (a.status === 'HADIR' && b.status === 'HADIR') return (a.timeIn || '').localeCompare(b.timeIn || '');
       return a.name.localeCompare(b.name);
     });
-
-  const filteredTeaching = teachingData.filter(item => 
-    item.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    item.subject.toLowerCase().includes(searchQuery)
-  );
 
   const stats = {
     total: attendanceData.length,
     present: attendanceData.filter(i => i.status === 'HADIR').length,
     teaching: teachingData.length,
-    absent: attendanceData.filter(i => i.status === 'IZIN' || i.status === 'SAKIT').length
+    avgPercentage: monthlyRecaps.length > 0 ? Math.round(monthlyRecaps.reduce((a, b) => a + b.percentage, 0) / monthlyRecaps.length) : 0
   };
 
   const getStatusColor = (status: string) => {
@@ -190,461 +166,191 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user }) => {
     }
   };
 
-  // Helper untuk cek apakah jam mengajar masih berlangsung
-  const checkIsLive = (isoEndTime?: string) => {
-    if (!isoEndTime) return false;
-    try {
-      // Parse endTime. Asumsi input ISO format (misal 1899-12-30T10:00:00.000Z) atau Time String
-      const endDate = new Date(isoEndTime);
-      
-      // Buat objek Date untuk "Hari Ini" tapi dengan Jam/Menit dari endDate
-      // Karena tanggal di sheet bisa jadi epoch 1899
-      const endToday = new Date(
-        currentTime.getFullYear(), 
-        currentTime.getMonth(), 
-        currentTime.getDate(), 
-        endDate.getHours(), 
-        endDate.getMinutes(), 
-        0
-      );
-
-      // Jika waktu sekarang masih kurang dari waktu selesai, berarti LIVE
-      return currentTime < endToday;
-    } catch (e) {
-      return false;
-    }
-  };
-
-  const convertToCSV = (data: any[]) => {
-    if (data.length === 0) return '';
-    const headers = Object.keys(data[0]).join(',');
-    const rows = data.map(obj => Object.values(obj).map(val => `"${val}"`).join(','));
-    return [headers, ...rows].join('\n');
+  const getPercentageColor = (pct: number) => {
+    if (pct >= 90) return 'text-emerald-500';
+    if (pct >= 75) return 'text-amber-500';
+    return 'text-red-500';
   };
 
   const handleDownloadReport = async () => {
     setIsDownloading(true);
     try {
-      // Fetch report data
       const reportData = await fetchReportData(downloadStartDate, downloadEndDate);
-      
-      if (!reportData || reportData.length === 0) {
-        alert("Tidak ada data ditemukan pada rentang tanggal tersebut.");
-        setIsDownloading(false);
-        return;
-      }
-
-      // Convert to CSV
-      const csvString = convertToCSV(reportData);
-      
-      // Trigger download
+      if (!reportData || reportData.length === 0) { alert("Data tidak ditemukan."); return; }
+      const headers = Object.keys(reportData[0]).join(',');
+      const rows = reportData.map((obj: any) => Object.values(obj).map(val => `"${val}"`).join(','));
+      const csvString = [headers, ...rows].join('\n');
       const blob = new Blob([csvString], { type: 'text/csv;charset=utf-8;' });
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.setAttribute('download', `Laporan_Absensi_SMPN1_${downloadStartDate}_sd_${downloadEndDate}.csv`);
+      link.setAttribute('download', `Laporan_Absensi_${downloadStartDate}_${downloadEndDate}.csv`);
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
-      
       setShowDownloadModal(false);
-    } catch (error) {
-      alert("Gagal mengunduh laporan.");
-    } finally {
-      setIsDownloading(false);
-    }
+    } catch (error) { alert("Gagal mengunduh laporan."); } finally { setIsDownloading(false); }
   };
-
-  const handleCloseModal = () => setSelectedTeacher(null);
 
   return (
     <div className="flex-1 pb-24 overflow-y-auto bg-slate-950">
       <Header title="Admin Dashboard" />
 
       {/* Stats Section */}
-      <div className="px-6 mb-8">
-        <div className="grid grid-cols-2 gap-4">
-          <div className="p-5 rounded-[2rem] bg-indigo-600/10 border border-indigo-500/20 relative overflow-hidden group">
-            <div className="absolute -right-2 -bottom-2 opacity-5 group-hover:scale-110 transition-transform text-indigo-500">
-              <Users size={80} />
+      <div className="px-6 mb-8 overflow-x-auto">
+        <div className="flex gap-4 pb-2">
+          <div className="min-w-[140px] flex-1 p-4 rounded-3xl bg-indigo-600/10 border border-indigo-500/20">
+            <div className="flex items-center gap-2 mb-2">
+              <UserCheck size={14} className="text-indigo-400" />
+              <span className="text-[9px] font-black text-indigo-400 uppercase tracking-widest">Hadir</span>
             </div>
-            <div className="flex items-center gap-2 mb-3">
-              <div className="p-2 bg-indigo-500 rounded-xl text-white shadow-lg shadow-indigo-500/20">
-                <UserCheck size={18} />
-              </div>
-              <span className="text-[10px] font-black text-indigo-400 uppercase tracking-widest">Presensi</span>
-            </div>
-            <div className="flex items-baseline gap-1">
-              <span className="text-3xl font-black text-white">{isLoading ? '-' : stats.present}</span>
-              <span className="text-slate-500 text-xs font-bold">/ {isLoading ? '-' : stats.total}</span>
-            </div>
-            <p className="text-[10px] text-slate-500 font-bold mt-1 uppercase tracking-tight">Guru Telah Hadir</p>
+            <div className="text-2xl font-black text-white">{stats.present}<span className="text-slate-500 text-xs font-bold">/{stats.total}</span></div>
           </div>
 
-          <div className="p-5 rounded-[2rem] bg-amber-600/10 border border-amber-500/20 relative overflow-hidden group">
-            <div className="absolute -right-2 -bottom-2 opacity-5 group-hover:scale-110 transition-transform text-amber-500">
-              <BookOpen size={80} />
+          <div className="min-w-[140px] flex-1 p-4 rounded-3xl bg-amber-600/10 border border-amber-500/20">
+            <div className="flex items-center gap-2 mb-2">
+              <GraduationCap size={14} className="text-amber-400" />
+              <span className="text-[9px] font-black text-amber-400 uppercase tracking-widest">Mengajar</span>
             </div>
-            <div className="flex items-center gap-2 mb-3">
-              <div className="p-2 bg-amber-500 rounded-xl text-white shadow-lg shadow-amber-500/20">
-                <BookOpen size={18} />
-              </div>
-              <span className="text-[10px] font-black text-amber-400 uppercase tracking-widest">KBM</span>
+            <div className="text-2xl font-black text-white">{stats.teaching}</div>
+          </div>
+
+          <div className="min-w-[140px] flex-1 p-4 rounded-3xl bg-emerald-600/10 border border-emerald-500/20">
+            <div className="flex items-center gap-2 mb-2">
+              <TrendingUp size={14} className="text-emerald-400" />
+              <span className="text-[9px] font-black text-emerald-400 uppercase tracking-widest">Rata-rata</span>
             </div>
-            <span className="text-3xl font-black text-white">{isLoading ? '-' : stats.teaching}</span>
-            <p className="text-[10px] text-slate-500 font-bold mt-1 uppercase tracking-tight">Sesi Mengajar Aktif</p>
+            <div className="text-2xl font-black text-white">{stats.avgPercentage}%</div>
           </div>
         </div>
       </div>
 
-      {/* Control Area: Search & Tabs */}
+      {/* Controls */}
       <div className="px-6 space-y-4 sticky top-[80px] z-30 bg-slate-950/80 backdrop-blur-md pb-4">
         <div className="flex items-center justify-between">
-           <span className="text-[10px] text-slate-500 font-mono">
-              Last update: {lastUpdated.toLocaleTimeString('id-ID')}
-           </span>
+           <span className="text-[10px] text-slate-500 font-mono">Update: {lastUpdated.toLocaleTimeString('id-ID')}</span>
            <div className="flex gap-2">
-             <button 
-               onClick={() => setShowDownloadModal(true)} 
-               className="flex items-center gap-2 px-3 py-1.5 bg-indigo-600/20 border border-indigo-500/30 rounded-full text-indigo-400 hover:bg-indigo-600 hover:text-white transition-all text-[10px] font-bold uppercase tracking-wider"
-             >
-               <Download size={14} />
-               Laporan
+             <button onClick={() => setShowDownloadModal(true)} className="flex items-center gap-2 px-3 py-1.5 bg-indigo-600/20 border border-indigo-500/30 rounded-full text-indigo-400 text-[10px] font-bold uppercase tracking-wider">
+               <Download size={14} /> Laporan
              </button>
-             <button 
-               onClick={loadData} 
-               disabled={isLoading}
-               className="p-2 bg-slate-800 rounded-full text-indigo-400 hover:text-white transition-colors"
-             >
+             <button onClick={loadData} disabled={isLoading} className="p-2 bg-slate-800 rounded-full text-indigo-400">
                <RefreshCw size={14} className={isLoading ? "animate-spin" : ""} />
              </button>
            </div>
         </div>
         
-        <div className="relative group">
-          <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-slate-500 group-focus-within:text-indigo-400 transition-colors">
-            <Search size={18} />
-          </div>
-          <input 
-            type="text"
-            placeholder="Cari Nama Guru atau NIP..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full pl-11 pr-4 py-4 bg-slate-900/50 border border-white/10 rounded-2xl text-white text-sm outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-500/50 transition-all placeholder-slate-600"
-          />
+        <div className="relative">
+          <Search size={18} className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" />
+          <input type="text" placeholder="Cari Guru..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="w-full pl-11 pr-4 py-4 bg-slate-900/50 border border-white/10 rounded-2xl text-white text-sm outline-none" />
         </div>
 
-        <div className="bg-slate-900/50 p-1.5 rounded-2xl border border-white/5 flex gap-1">
-          <button 
-            onClick={() => setActiveTab('attendance')}
-            className={`flex-1 py-3 text-[11px] font-black uppercase tracking-wider rounded-xl transition-all flex items-center justify-center gap-2 ${activeTab === 'attendance' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'text-slate-500 hover:text-slate-300'}`}
-          >
-            <Clock size={16} />
-            Data Presensi
-          </button>
-          <button 
-            onClick={() => setActiveTab('teaching')}
-            className={`flex-1 py-3 text-[11px] font-black uppercase tracking-wider rounded-xl transition-all flex items-center justify-center gap-2 ${activeTab === 'teaching' ? 'bg-amber-600 text-white shadow-lg shadow-amber-600/20' : 'text-slate-500 hover:text-slate-300'}`}
-          >
-            <GraduationCap size={16} />
-            Jadwal Mengajar
-          </button>
+        <div className="bg-slate-900/50 p-1 rounded-2xl border border-white/5 flex gap-1">
+          {(['attendance', 'teaching', 'recap'] as const).map(tab => (
+            <button key={tab} onClick={() => setActiveTab(tab)} className={`flex-1 py-2.5 text-[10px] font-black uppercase tracking-wider rounded-xl transition-all ${activeTab === tab ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'text-slate-500'}`}>
+              {tab === 'attendance' ? 'Presensi' : tab === 'teaching' ? 'Mengajar' : 'Rekap %'}
+            </button>
+          ))}
         </div>
       </div>
 
-      {/* Main Content List Area */}
+      {/* List Area */}
       <div className="px-6 space-y-3 mt-2">
         {isLoading ? (
-          <div className="flex flex-col items-center justify-center py-20 text-center space-y-4">
-             <div className="w-8 h-8 border-4 border-indigo-500/30 border-t-indigo-500 rounded-full animate-spin"></div>
-             <p className="text-xs text-slate-500">Mengambil data terbaru...</p>
-          </div>
+          <div className="py-20 text-center space-y-2"><div className="w-8 h-8 border-4 border-indigo-500/30 border-t-indigo-500 rounded-full animate-spin mx-auto"></div><p className="text-xs text-slate-500">Memuat...</p></div>
         ) : activeTab === 'attendance' ? (
           filteredAttendance.length > 0 ? (
-            filteredAttendance.map((item) => (
-              <div 
-                key={item.id} 
-                onClick={() => setSelectedTeacher(item)}
-                className="p-4 bg-slate-900/40 border border-white/5 rounded-3xl hover:bg-slate-900/60 transition-all group border-l-4 border-l-transparent hover:border-l-indigo-500 cursor-pointer active:scale-[0.98]"
-              >
-                <div className="flex justify-between items-start mb-4">
-                  <div className="flex items-center gap-3">
-                    {/* Foto profile dihapus sesuai request */}
-                    <div>
-                      <h4 className="text-sm font-bold text-white group-hover:text-indigo-300 transition-colors leading-tight">{item.name}</h4>
-                      <div className="flex items-center gap-2 mt-1">
-                        <span className="text-[10px] text-slate-500 font-mono">NIP: {item.nip}</span>
-                      </div>
-                    </div>
+            filteredAttendance.map(item => (
+              <div key={item.id} onClick={() => setSelectedTeacher(item)} className="p-4 bg-slate-900/40 border border-white/5 rounded-3xl hover:bg-slate-900/60 transition-all cursor-pointer">
+                <div className="flex justify-between items-start mb-3">
+                  <div>
+                    <h4 className="text-sm font-bold text-white leading-tight">{item.name}</h4>
+                    <span className="text-[10px] text-slate-500 font-mono">NIP: {item.nip}</span>
                   </div>
-                  <div className={`px-2.5 py-1 rounded-full text-[9px] font-black uppercase tracking-wider border ${getStatusColor(item.status)}`}>
-                    {item.status}
-                  </div>
+                  <div className={`px-2.5 py-1 rounded-full text-[9px] font-black uppercase tracking-wider border ${getStatusColor(item.status)}`}>{item.status}</div>
                 </div>
-                
-                <div className="flex items-center justify-between p-3 bg-slate-950/50 rounded-2xl border border-white/5">
-                  <div className="flex items-center gap-2">
-                    <div className="p-1.5 bg-emerald-500/10 rounded-lg text-emerald-500">
-                      <Clock size={14} />
-                    </div>
-                    <div className="flex flex-col">
-                      <span className="text-[8px] text-slate-500 font-black uppercase">Masuk</span>
-                      <span className="text-xs text-white font-mono font-bold">{item.timeIn || '--:--'}</span>
-                    </div>
-                  </div>
-                  
-                  <div className="h-6 w-px bg-white/5" />
-                  
-                  <div className="flex items-center gap-2">
-                    <div className="p-1.5 bg-indigo-500/10 rounded-lg text-indigo-500">
-                      <Clock size={14} />
-                    </div>
-                    <div className="flex flex-col text-right">
-                      <span className="text-[8px] text-slate-500 font-black uppercase">Pulang</span>
-                      <span className="text-xs text-white font-mono font-bold">{item.timeOut || '--:--'}</span>
-                    </div>
-                  </div>
+                <div className="flex items-center justify-between p-2.5 bg-slate-950/50 rounded-2xl border border-white/5 text-[11px]">
+                  <div className="flex flex-col"><span className="text-[8px] text-slate-500 uppercase font-bold">Masuk</span><span className="text-white font-mono">{item.timeIn || '--:--'}</span></div>
+                  <div className="h-4 w-px bg-white/5" />
+                  <div className="flex flex-col text-right"><span className="text-[8px] text-slate-500 uppercase font-bold">Pulang</span><span className="text-white font-mono">{item.timeOut || '--:--'}</span></div>
                 </div>
               </div>
             ))
           ) : (
-            <div className="flex flex-col items-center justify-center py-20 text-center space-y-4 opacity-40">
-              <div className="p-6 bg-slate-900 rounded-full">
-                <UserMinus size={48} />
-              </div>
-              <p className="text-slate-500 text-sm font-medium tracking-wide uppercase">Data guru tidak ditemukan</p>
-            </div>
+            <div className="py-10 text-center"><p className="text-sm text-slate-500">Data tidak ditemukan.</p></div>
           )
+        ) : activeTab === 'recap' ? (
+            monthlyRecaps.length > 0 ? (
+              monthlyRecaps
+              .filter(r => r.name.toLowerCase().includes(searchQuery.toLowerCase()))
+              .map(item => (
+                  <div key={item.nip} className="p-5 bg-slate-900/40 border border-white/5 rounded-3xl space-y-4">
+                      <div className="flex justify-between items-center">
+                          <div className="flex-1 min-w-0">
+                              <h4 className="text-sm font-bold text-white truncate">{item.name}</h4>
+                              <span className="text-[10px] text-slate-500 font-mono">Bulan ini: {item.presentCount} / {WORKING_DAYS_STANDAR} Hari</span>
+                          </div>
+                          <div className={`text-xl font-black ${getPercentageColor(item.percentage)}`}>{Math.round(item.percentage)}%</div>
+                      </div>
+                      <div className="w-full h-2 bg-slate-800 rounded-full overflow-hidden">
+                          <div className={`h-full transition-all duration-1000 ${item.percentage >= 90 ? 'bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.3)]' : item.percentage >= 75 ? 'bg-amber-500' : 'bg-red-500'}`} style={{ width: `${item.percentage}%` }}></div>
+                      </div>
+                  </div>
+              ))
+            ) : (
+              <div className="py-10 text-center"><p className="text-sm text-slate-500">Belum ada rekap data.</p></div>
+            )
         ) : (
-          filteredTeaching.length > 0 ? (
-          filteredTeaching.map((item) => {
-            const [start, end] = item.timeRange.split(' - ');
-            const isLive = checkIsLive(item.endTime);
-            
-            return (
-            <div key={item.id} className={`p-4 border rounded-3xl relative overflow-hidden group transition-all ${isLive ? 'bg-slate-900/40 border-white/5 hover:bg-slate-900/60' : 'bg-slate-900/20 border-white/5 opacity-80 grayscale-[0.5]'}`}>
-              {isLive && (
-                <div className="absolute -right-4 -top-4 p-4 opacity-5 group-hover:scale-125 group-hover:opacity-10 transition-all rotate-12">
-                  <GraduationCap size={100} />
+          teachingData.length > 0 ? (
+            teachingData.map(item => (
+              <div key={item.id} className="p-4 bg-slate-900/40 border border-white/5 rounded-3xl">
+                <div className="flex items-center gap-3 mb-3">
+                  <div className="p-2.5 bg-amber-500/10 rounded-2xl text-amber-500"><GraduationCap size={20} /></div>
+                  <div><h4 className="text-sm font-bold text-white leading-tight">{item.name}</h4><p className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">{item.subject} • {item.className}</p></div>
                 </div>
-              )}
-              
-              <div className="flex items-center gap-3 mb-4">
-                <div className={`w-12 h-12 rounded-2xl border flex items-center justify-center transition-colors ${isLive ? 'bg-amber-500/10 border-amber-500/20 text-amber-500' : 'bg-slate-800 border-white/5 text-slate-500'}`}>
-                  <GraduationCap size={24} />
-                </div>
-                <div>
-                  <h4 className={`text-sm font-bold leading-tight transition-colors ${isLive ? 'text-white group-hover:text-amber-400' : 'text-slate-400'}`}>{item.name}</h4>
-                  
-                  {isLive ? (
-                    <div className="flex items-center gap-1.5 mt-1">
-                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
-                      <span className="text-[10px] text-emerald-500 uppercase font-bold tracking-widest">Live Mengajar</span>
-                    </div>
-                  ) : (
-                    <div className="flex items-center gap-1.5 mt-1">
-                      <span className="w-1.5 h-1.5 rounded-full bg-slate-600"></span>
-                      <span className="text-[10px] text-slate-500 uppercase font-bold tracking-widest">Selesai</span>
-                    </div>
-                  )}
-                </div>
+                <div className="flex items-center gap-2 p-2.5 bg-slate-950/50 rounded-2xl border border-white/5 text-[11px]"><Clock size={14} className="text-amber-500" /><span className="text-white font-mono">{item.timeRange}</span></div>
               </div>
-              
-              <div className="grid grid-cols-2 gap-3 relative z-10">
-                <div className="p-3 bg-slate-950/50 rounded-2xl border border-white/5 flex flex-col">
-                  <span className="text-[8px] text-slate-500 uppercase font-black mb-1">Mata Pelajaran</span>
-                  <div className="flex items-center gap-2">
-                    <BookOpen size={14} className={isLive ? "text-amber-400" : "text-slate-500"} />
-                    <span className={`text-xs font-bold truncate ${isLive ? "text-white" : "text-slate-400"}`}>{item.subject}</span>
-                  </div>
-                </div>
-                <div className="p-3 bg-slate-950/50 rounded-2xl border border-white/5 flex flex-col">
-                  <span className="text-[8px] text-slate-500 uppercase font-black mb-1">Ruang Kelas</span>
-                  <div className="flex items-center gap-2">
-                    <MapPin size={14} className={isLive ? "text-indigo-400" : "text-slate-500"} />
-                    <span className={`text-xs font-bold ${isLive ? "text-white" : "text-slate-400"}`}>{item.className}</span>
-                  </div>
-                </div>
-              </div>
-              
-              <div className="mt-3 grid grid-cols-2 gap-2">
-                <div className="flex items-center gap-2 p-2 bg-slate-950/30 rounded-xl border border-white/5">
-                  <Clock size={14} className={isLive ? "text-indigo-500" : "text-slate-500"} />
-                  <div className="flex flex-col">
-                     <span className="text-[8px] text-slate-500 font-bold uppercase">Mulai</span>
-                     <span className={`text-xs font-mono font-bold ${isLive ? "text-white" : "text-slate-400"}`}>{start}</span>
-                  </div>
-                </div>
-                <div className="flex items-center gap-2 p-2 bg-slate-950/30 rounded-xl border border-white/5">
-                  <Clock size={14} className={isLive ? "text-amber-500" : "text-slate-500"} />
-                  <div className="flex flex-col">
-                     <span className="text-[8px] text-slate-500 font-bold uppercase">Selesai</span>
-                     <span className={`text-xs font-mono font-bold ${isLive ? "text-white" : "text-slate-400"}`}>{end}</span>
-                  </div>
-                </div>
-              </div>
-            </div>
-            );
-          })
+            ))
           ) : (
-            <div className="flex flex-col items-center justify-center py-20 text-center space-y-4 opacity-40">
-              <div className="p-6 bg-slate-900 rounded-full">
-                <BookOpen size={48} />
-              </div>
-              <p className="text-slate-500 text-sm font-medium tracking-wide uppercase">Belum ada KBM dimulai</p>
-            </div>
+            <div className="py-10 text-center"><p className="text-sm text-slate-500">Belum ada aktivitas mengajar hari ini.</p></div>
           )
         )}
       </div>
 
-      {/* Detail Modal */}
-      {selectedTeacher && (
-        <div className="fixed inset-0 z-[60] flex items-end sm:items-center justify-center px-0 sm:px-4">
-          <div 
-            className="fixed inset-0 bg-slate-950/90 backdrop-blur-sm animate-in fade-in duration-300" 
-            onClick={handleCloseModal} 
-          />
-          <div className="relative w-full max-w-md bg-slate-900 rounded-t-[2.5rem] sm:rounded-[2.5rem] overflow-hidden border-t border-x sm:border border-white/10 shadow-2xl animate-in slide-in-from-bottom-10 sm:zoom-in duration-300">
-            {/* Modal Header */}
-            <div className="px-6 pt-8 pb-4 flex justify-between items-start relative">
-               <div className="flex items-center gap-4">
-                  <div className="w-16 h-16 rounded-2xl p-1 bg-gradient-to-tr from-indigo-500 to-purple-500 shadow-xl shadow-indigo-500/20 overflow-hidden">
-                    {selectedTeacher.photoUrl ? (
-                      <img 
-                        src={selectedTeacher.photoUrl} 
-                        alt={selectedTeacher.name} 
-                        className="w-full h-full rounded-xl object-cover border-2 border-slate-900"
-                      />
-                    ) : (
-                      <div className="w-full h-full rounded-xl bg-slate-800 border-2 border-slate-900 flex items-center justify-center">
-                        <span className="text-xl font-black text-white tracking-widest">{getInitials(selectedTeacher.name)}</span>
-                      </div>
-                    )}
-                  </div>
-                  <div>
-                    <h3 className="text-lg font-bold text-white leading-tight">{selectedTeacher.name}</h3>
-                    <p className="text-xs text-slate-500 font-mono mt-1">NIP: {selectedTeacher.nip}</p>
-                  </div>
-               </div>
-               <button 
-                onClick={handleCloseModal} 
-                className="p-2 bg-slate-800/80 text-slate-400 rounded-full hover:text-white transition-colors"
-               >
-                 <X size={20} />
-               </button>
-            </div>
-
-            {/* Modal Content Scrollable Area */}
-            <div className="px-6 pb-12 max-h-[70vh] overflow-y-auto space-y-6 pt-4">
-               {/* Daily Status Card */}
-               <div className="bg-slate-950/50 rounded-3xl border border-white/5 p-5 space-y-4">
-                  <div className="flex justify-between items-center pb-3 border-b border-white/5">
-                    <span className="text-[10px] text-slate-500 font-black uppercase tracking-widest">Presensi Hari Ini</span>
-                    <div className={`px-2.5 py-1 rounded-full text-[9px] font-black uppercase tracking-wider border ${getStatusColor(selectedTeacher.status)}`}>
-                      {selectedTeacher.status}
-                    </div>
-                  </div>
-                  
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-1">
-                      <span className="text-[9px] text-slate-500 font-black uppercase">Jam Masuk</span>
-                      <div className="flex items-center gap-2">
-                        <div className="p-1.5 bg-emerald-500/10 rounded-lg text-emerald-500">
-                          <Clock size={14} />
-                        </div>
-                        <span className="text-sm text-white font-bold">{selectedTeacher.timeIn || '--:--'}</span>
-                      </div>
-                    </div>
-                    <div className="space-y-1">
-                      <span className="text-[9px] text-slate-500 font-black uppercase">Jam Pulang</span>
-                      <div className="flex items-center gap-2">
-                        <div className="p-1.5 bg-indigo-500/10 rounded-lg text-indigo-500">
-                          <Clock size={14} />
-                        </div>
-                        <span className="text-sm text-white font-bold">{selectedTeacher.timeOut || '--:--'}</span>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="pt-2">
-                    <div className="flex items-center gap-2 p-3 bg-slate-800/40 rounded-xl border border-white/5">
-                       <MapPin size={14} className="text-slate-500" />
-                       <span className="text-[10px] text-slate-400 font-medium">Status Data: <span className="text-white">Sinkronisasi Real-time</span></span>
-                    </div>
-                  </div>
-               </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Download Modal */}
+      {/* Modals & Footer */}
       {showDownloadModal && (
         <div className="fixed inset-0 z-[70] flex items-center justify-center px-6">
-          <div 
-            className="fixed inset-0 bg-slate-950/90 backdrop-blur-sm animate-in fade-in duration-300" 
-            onClick={() => setShowDownloadModal(false)}
-          />
-          <div className="relative w-full max-w-sm bg-slate-900 rounded-[2.5rem] border border-white/10 p-8 shadow-2xl animate-in zoom-in slide-in-from-bottom-4 duration-300">
-             <div className="flex justify-between items-center mb-6">
-                <h3 className="text-xl font-bold text-white flex items-center gap-2">
-                  <FileText className="text-indigo-500" /> Laporan Presensi
-                </h3>
-                <button onClick={() => setShowDownloadModal(false)} className="text-slate-500 hover:text-white">
-                  <X size={20} />
-                </button>
-             </div>
-
+          <div className="fixed inset-0 bg-slate-950/90 backdrop-blur-sm" onClick={() => setShowDownloadModal(false)}/>
+          <div className="relative w-full max-w-sm bg-slate-900 rounded-[2.5rem] border border-white/10 p-8">
+             <h3 className="text-xl font-bold text-white mb-6 flex items-center gap-2"><FileText className="text-indigo-500" /> Unduh Laporan</h3>
              <div className="space-y-4">
-                <div className="space-y-2">
-                   <label className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">Tanggal Mulai</label>
-                   <input 
-                      type="date" 
-                      value={downloadStartDate}
-                      onChange={(e) => setDownloadStartDate(e.target.value)}
-                      className="w-full p-4 bg-slate-800 border border-slate-700 rounded-xl text-white outline-none focus:ring-2 focus:ring-indigo-500/50"
-                   />
-                </div>
-                <div className="space-y-2">
-                   <label className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">Tanggal Selesai</label>
-                   <input 
-                      type="date" 
-                      value={downloadEndDate}
-                      onChange={(e) => setDownloadEndDate(e.target.value)}
-                      className="w-full p-4 bg-slate-800 border border-slate-700 rounded-xl text-white outline-none focus:ring-2 focus:ring-indigo-500/50"
-                   />
-                </div>
-
-                <div className="pt-4">
-                  <button 
-                    onClick={handleDownloadReport}
-                    disabled={isDownloading}
-                    className="w-full py-4 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-2xl shadow-lg shadow-indigo-600/20 active:scale-[0.98] transition-all flex items-center justify-center gap-2"
-                  >
-                    {isDownloading ? (
-                      <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                    ) : (
-                      <>
-                        <Download size={20} />
-                        Unduh File CSV
-                      </>
-                    )}
-                  </button>
-                  <p className="text-[10px] text-center text-slate-600 mt-3 font-medium">
-                    File CSV dapat dibuka di Microsoft Excel atau Google Sheets.
-                  </p>
-                </div>
+                <div className="space-y-1"><label className="text-[10px] text-slate-500 font-bold uppercase">Mulai</label><input type="date" value={downloadStartDate} onChange={e => setDownloadStartDate(e.target.value)} className="w-full p-4 bg-slate-800 border border-slate-700 rounded-xl text-white outline-none" /></div>
+                <div className="space-y-1"><label className="text-[10px] text-slate-500 font-bold uppercase">Selesai</label><input type="date" value={downloadEndDate} onChange={e => setDownloadEndDate(e.target.value)} className="w-full p-4 bg-slate-800 border border-slate-700 rounded-xl text-white outline-none" /></div>
+                <button onClick={handleDownloadReport} disabled={isDownloading} className="w-full py-4 bg-indigo-600 text-white font-bold rounded-2xl flex items-center justify-center gap-2">{isDownloading ? <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <><Download size={18} /> Unduh CSV</>}</button>
              </div>
           </div>
         </div>
       )}
-      
-      {/* Bottom Info */}
-      <div className="mt-8 text-center px-10 pb-10">
-        <p className="text-[10px] text-slate-600 font-bold uppercase tracking-widest leading-relaxed">
-          Menampilkan data presensi harian secara real-time berdasarkan koordinat GPS dan bukti foto.
-        </p>
-      </div>
+
+      {selectedTeacher && (
+        <div className="fixed inset-0 z-[60] flex items-end justify-center">
+          <div className="fixed inset-0 bg-slate-950/90 backdrop-blur-sm" onClick={() => setSelectedTeacher(null)} />
+          <div className="relative w-full max-w-md bg-slate-900 rounded-t-[2.5rem] border-t border-white/10 p-8 animate-in slide-in-from-bottom-10">
+            <div className="flex justify-between items-start mb-6">
+              <div className="flex items-center gap-4">
+                <div className="w-16 h-16 rounded-2xl bg-indigo-500/20 border-2 border-slate-800 flex items-center justify-center overflow-hidden">
+                  {selectedTeacher.photoUrl ? <img src={selectedTeacher.photoUrl} className="w-full h-full object-cover" /> : <span className="text-xl font-black text-white">{getInitials(selectedTeacher.name)}</span>}
+                </div>
+                <div><h3 className="text-lg font-bold text-white">{selectedTeacher.name}</h3><p className="text-xs text-slate-500 font-mono">NIP: {selectedTeacher.nip}</p></div>
+              </div>
+              <button onClick={() => setSelectedTeacher(null)} className="p-2 bg-slate-800 rounded-full text-slate-400"><X size={20} /></button>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="p-4 bg-slate-950/50 rounded-2xl border border-white/5"><span className="text-[9px] text-slate-500 font-black uppercase">Masuk</span><p className="text-lg font-mono font-bold text-white">{selectedTeacher.timeIn || '--:--'}</p></div>
+              <div className="p-4 bg-slate-950/50 rounded-2xl border border-white/5"><span className="text-[9px] text-slate-500 font-black uppercase">Pulang</span><p className="text-lg font-mono font-bold text-white">{selectedTeacher.timeOut || '--:--'}</p></div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
